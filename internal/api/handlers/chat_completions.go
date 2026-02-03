@@ -5,23 +5,37 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/leeaandrob/claudex/internal/claude"
 	"github.com/leeaandrob/claudex/internal/converter"
+	"github.com/leeaandrob/claudex/internal/mcp"
 	"github.com/leeaandrob/claudex/internal/models"
 	"github.com/leeaandrob/claudex/internal/observability"
 	"github.com/valyala/fasthttp"
 )
 
+// getRequestTimeout returns the request timeout from environment or default (10 minutes)
+func getRequestTimeout() time.Duration {
+	if val := os.Getenv("REQUEST_TIMEOUT"); val != "" {
+		if seconds, err := strconv.Atoi(val); err == nil && seconds > 0 {
+			return time.Duration(seconds) * time.Second
+		}
+	}
+	return 10 * time.Minute
+}
+
 // ChatCompletionsHandler handles chat completion requests.
 type ChatCompletionsHandler struct {
-	executor  *claude.Executor
-	parser    *claude.Parser
-	converter *converter.Converter
-	metrics   *observability.Metrics
-	logger    *observability.Logger
+	executor   *claude.Executor
+	parser     *claude.Parser
+	converter  *converter.Converter
+	mcpManager *mcp.Manager
+	metrics    *observability.Metrics
+	logger     *observability.Logger
 }
 
 // NewChatCompletionsHandler creates a new chat completions handler.
@@ -29,15 +43,17 @@ func NewChatCompletionsHandler(
 	executor *claude.Executor,
 	parser *claude.Parser,
 	conv *converter.Converter,
+	mcpManager *mcp.Manager,
 	metrics *observability.Metrics,
 	logger *observability.Logger,
 ) *ChatCompletionsHandler {
 	return &ChatCompletionsHandler{
-		executor:  executor,
-		parser:    parser,
-		converter: conv,
-		metrics:   metrics,
-		logger:    logger,
+		executor:   executor,
+		parser:     parser,
+		converter:  conv,
+		mcpManager: mcpManager,
+		metrics:    metrics,
+		logger:     logger,
 	}
 }
 
@@ -72,26 +88,28 @@ func (h *ChatCompletionsHandler) Handle(c *fiber.Ctx) error {
 		})
 	}
 
-	// Convert messages to Claude prompt
-	prompt, systemPrompt := h.converter.MessagesToPrompt(req.Messages)
-
-	// Branch on stream parameter
-	if req.Stream {
-		return h.handleStreaming(c, prompt, systemPrompt, req.Model, start)
+	// Add MCP tools to the request if available
+	if h.mcpManager != nil && h.mcpManager.HasTools() {
+		mcpTools := h.mcpManager.GetToolsAsOpenAI()
+		req.Tools = append(req.Tools, mcpTools...)
 	}
-	return h.handleNonStreaming(c, prompt, systemPrompt, req.Model, start)
+
+	// Use CLI for all requests (Anthropic API deprecated)
+	if req.Stream {
+		return h.handleStreamingCLI(c, &req, start)
+	}
+	return h.handleNonStreamingCLI(c, &req, start)
 }
 
-// handleNonStreaming handles non-streaming requests.
-func (h *ChatCompletionsHandler) handleNonStreaming(c *fiber.Ctx, prompt, systemPrompt, model string, start time.Time) error {
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(c.Context(), 5*time.Minute)
+// handleNonStreamingCLI handles non-streaming requests using CLI.
+func (h *ChatCompletionsHandler) handleNonStreamingCLI(c *fiber.Ctx, req *models.ChatCompletionRequest, start time.Time) error {
+	ctx, cancel := context.WithTimeout(c.Context(), getRequestTimeout())
 	defer cancel()
 
 	claudeStart := time.Now()
 
-	// Execute Claude CLI
-	output, err := h.executor.ExecuteNonStreaming(ctx, prompt, systemPrompt)
+	// Execute Claude CLI with messages (supports images and tools via stream-json)
+	output, err := h.executor.ExecuteWithMessages(ctx, req)
 	if err != nil {
 		h.metrics.RecordError("claude_error")
 		h.metrics.RecordRequest("error", false, time.Since(start).Seconds())
@@ -120,22 +138,107 @@ func (h *ChatCompletionsHandler) handleNonStreaming(c *fiber.Ctx, prompt, system
 		})
 	}
 
-	// Convert to OpenAI format
-	openaiResp := h.converter.ClaudeToOpenAIResponse(claudeResp, model)
+	// Convert to OpenAI format (handles tool calls in response)
+	openaiResp := h.converter.ClaudeToOpenAIResponse(claudeResp, req.Model)
+
+	// Execute MCP tools if there are tool calls and MCP manager is available
+	if len(openaiResp.Choices) > 0 && len(openaiResp.Choices[0].Message.ToolCalls) > 0 && h.mcpManager != nil {
+		openaiResp = h.executeMCPToolCalls(ctx, openaiResp, req)
+	}
 
 	h.metrics.RecordRequest("success", false, time.Since(start).Seconds())
 
 	return c.JSON(openaiResp)
 }
 
-// handleStreaming handles streaming requests with SSE.
-func (h *ChatCompletionsHandler) handleStreaming(c *fiber.Ctx, prompt, systemPrompt, model string, start time.Time) error {
-	// Set SSE headers - CRITICAL: must be set before any writes
+// executeMCPToolCalls executes tool calls via MCP and returns the results.
+func (h *ChatCompletionsHandler) executeMCPToolCalls(ctx context.Context, resp *models.ChatCompletionResponse, req *models.ChatCompletionRequest) *models.ChatCompletionResponse {
+	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
+		return resp
+	}
+
+	toolCalls := resp.Choices[0].Message.ToolCalls
+	var toolResults []models.Message
+
+	for _, tc := range toolCalls {
+		h.logger.Info("checking MCP tool availability", "tool_name", tc.Function.Name)
+
+		// Check if this is an MCP tool
+		if !h.mcpManager.IsToolAvailable(tc.Function.Name) {
+			// Not an MCP tool, skip (caller handles non-MCP tools)
+			h.logger.Info("tool not available via MCP, skipping", "tool_name", tc.Function.Name)
+			continue
+		}
+
+		h.logger.Info("executing MCP tool", "tool_name", tc.Function.Name, "arguments", tc.Function.Arguments)
+
+		// Execute the tool via MCP
+		result, err := h.mcpManager.CallTool(ctx, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+		if err != nil {
+			// Return error as tool result
+			toolResults = append(toolResults, models.Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Content:    fmt.Sprintf("Error: %v", err),
+			})
+			continue
+		}
+
+		// Format the tool result
+		resultContent := result.GetTextContent()
+		h.logger.Info("MCP tool executed successfully", "tool_name", tc.Function.Name, "result_length", len(resultContent))
+		toolResults = append(toolResults, models.Message{
+			Role:       "tool",
+			ToolCallID: tc.ID,
+			Content:    resultContent,
+		})
+	}
+
+	// If we executed any MCP tools, we need to continue the conversation
+	if len(toolResults) > 0 {
+		// Build new messages array with original messages + tool results
+		// Note: Claude CLI stream-json doesn't accept assistant messages in input,
+		// so we include only user messages and tool results
+		messages := append([]models.Message{}, req.Messages...)
+		messages = append(messages, toolResults...)
+
+		// Create a new request with the tool results
+		newReq := &models.ChatCompletionRequest{
+			Model:    req.Model,
+			Messages: messages,
+			Tools:    req.Tools,
+		}
+
+		// Execute again to get Claude's response to the tool results
+		newCtx, cancel := context.WithTimeout(ctx, getRequestTimeout())
+		defer cancel()
+
+		output, err := h.executor.ExecuteWithMessages(newCtx, newReq)
+		if err != nil {
+			h.logger.Error("failed to execute continuation after tool calls", "error", err.Error())
+			return resp
+		}
+
+		claudeResp, err := h.parser.ParseJSONResponse(output)
+		if err != nil {
+			h.logger.Error("failed to parse continuation response", "error", err.Error())
+			return resp
+		}
+
+		return h.converter.ClaudeToOpenAIResponse(claudeResp, req.Model)
+	}
+
+	return resp
+}
+
+// handleStreamingCLI handles streaming requests using CLI.
+func (h *ChatCompletionsHandler) handleStreamingCLI(c *fiber.Ctx, req *models.ChatCompletionRequest, start time.Time) error {
+	// Set SSE headers
 	c.Set("Content-Type", "text/event-stream")
 	c.Set("Cache-Control", "no-cache")
 	c.Set("Connection", "keep-alive")
 	c.Set("Transfer-Encoding", "chunked")
-	c.Set("X-Accel-Buffering", "no") // For nginx proxy
+	c.Set("X-Accel-Buffering", "no")
 
 	completionID := converter.GenerateCompletionID()
 
@@ -146,8 +249,8 @@ func (h *ChatCompletionsHandler) handleStreaming(c *fiber.Ctx, prompt, systemPro
 
 		claudeStart := time.Now()
 
-		// Start streaming from Claude CLI
-		chunks, errChan, err := h.executor.ExecuteStreaming(context.Background(), prompt, systemPrompt)
+		// Start streaming from Claude CLI (supports images and tools via stream-json)
+		chunks, errChan, err := h.executor.ExecuteStreamingWithMessages(context.Background(), req)
 		if err != nil {
 			h.metrics.RecordError("claude_error")
 			h.writeSSEError(w, "Failed to start Claude: "+err.Error())
@@ -171,9 +274,9 @@ func (h *ChatCompletionsHandler) handleStreaming(c *fiber.Ctx, prompt, systemPro
 					continue
 				}
 
-				// Send role-only chunk first (OpenAI SDK expects this)
+				// Send role-only chunk first
 				if isFirst {
-					roleChunk := h.converter.CreateRoleChunk(completionID, model)
+					roleChunk := h.converter.CreateRoleChunk(completionID, req.Model)
 					data, _ := json.Marshal(roleChunk)
 					fmt.Fprintf(w, "data: %s\n\n", data)
 					w.Flush()
@@ -181,7 +284,7 @@ func (h *ChatCompletionsHandler) handleStreaming(c *fiber.Ctx, prompt, systemPro
 				}
 
 				// Create chunk with delta text
-				chunk := h.converter.CreateContentChunk(completionID, model, deltaText)
+				chunk := h.converter.CreateContentChunk(completionID, req.Model, deltaText)
 				data, _ := json.Marshal(chunk)
 				fmt.Fprintf(w, "data: %s\n\n", data)
 				w.Flush()
@@ -200,7 +303,7 @@ func (h *ChatCompletionsHandler) handleStreaming(c *fiber.Ctx, prompt, systemPro
 		}
 
 		// Send final chunk with finish_reason
-		finalChunk := h.converter.CreateFinalChunk(completionID, model)
+		finalChunk := h.converter.CreateFinalChunk(completionID, req.Model)
 		data, _ := json.Marshal(finalChunk)
 		fmt.Fprintf(w, "data: %s\n\n", data)
 
@@ -226,3 +329,6 @@ func (h *ChatCompletionsHandler) writeSSEError(w *bufio.Writer, message string) 
 	fmt.Fprintf(w, "data: [DONE]\n\n")
 	w.Flush()
 }
+
+// NOTE: Anthropic API handlers removed as part of deprecation (PRP-002).
+// All requests now use Claude CLI only.

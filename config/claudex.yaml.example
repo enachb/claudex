@@ -1,0 +1,94 @@
+# Claudex MCP Configuration
+# Copy this file to claudex.yaml and customize for your setup
+#
+# MCP (Model Context Protocol) servers provide tools that Claude can call
+# during conversations. Each server runs as a subprocess communicating
+# via stdio (JSON-RPC 2.0 over stdin/stdout).
+
+mcp:
+  # Global MCP settings
+  settings:
+    # Timeout for MCP server initialization (seconds)
+    init_timeout: 30
+    # Timeout for tool calls (seconds)
+    call_timeout: 60
+    # Restart failed servers automatically
+    auto_restart: true
+    # Max restart attempts before giving up
+    max_restarts: 3
+
+  # MCP Server definitions
+  servers:
+    # Pokemon Emulator MCP Server
+    # Provides tools for controlling a Game Boy emulator running Pokemon Red
+    - name: pokemon-emulator
+      command: python
+      args:
+        - /path/to/claude-plays-pokemon/mcp_server.py
+        - --rom
+        - /path/to/pokemon.gb
+        - --headless
+      env:
+        PYTHONUNBUFFERED: "1"
+      enabled: true
+
+    # Filesystem MCP Server (from official MCP servers)
+    # Provides tools for reading/writing files within allowed paths
+    - name: filesystem
+      command: npx
+      args:
+        - -y
+        - "@modelcontextprotocol/server-filesystem"
+        - /home/user/allowed-directory
+      enabled: false
+
+    # SQLite MCP Server (from official MCP servers)
+    # Provides tools for querying SQLite databases
+    - name: sqlite
+      command: npx
+      args:
+        - -y
+        - "@modelcontextprotocol/server-sqlite"
+        - /path/to/database.db
+      enabled: false
+
+    # Brave Search MCP Server
+    # Provides web search capabilities
+    - name: brave-search
+      command: npx
+      args:
+        - -y
+        - "@modelcontextprotocol/server-brave-search"
+      env:
+        BRAVE_API_KEY: "${BRAVE_API_KEY}"  # Reference environment variable
+      enabled: false
+
+    # Custom Python MCP Server Example
+    # Template for your own MCP servers using FastMCP
+    - name: custom-tools
+      command: python
+      args:
+        - /path/to/your/mcp_server.py
+      env:
+        CUSTOM_VAR: "value"
+      enabled: false
+
+# Server configuration
+server:
+  # HTTP server port
+  port: 8080
+  # Request timeout
+  timeout: 300s
+  # Enable debug logging
+  debug: false
+
+# Claude CLI configuration
+claude:
+  # Path to Claude CLI binary (defaults to 'claude' in PATH)
+  binary: claude
+  # Default flags to pass to Claude CLI
+  flags:
+    - --dangerously-skip-permissions
+    - --no-chrome
+  # Maximum tokens for responses
+  max_tokens: 4096

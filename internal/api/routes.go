@@ -11,11 +11,12 @@ import (
 	"github.com/leeaandrob/claudex/internal/api/middleware"
 	"github.com/leeaandrob/claudex/internal/claude"
 	"github.com/leeaandrob/claudex/internal/converter"
+	"github.com/leeaandrob/claudex/internal/mcp"
 	"github.com/leeaandrob/claudex/internal/observability"
 )
 
 // RegisterRoutes registers all API routes.
-func RegisterRoutes(app *fiber.App, logger *observability.Logger, metrics *observability.Metrics, executor *claude.Executor) {
+func RegisterRoutes(app *fiber.App, logger *observability.Logger, metrics *observability.Metrics, executor *claude.Executor, mcpManager *mcp.Manager) {
 	// Add OpenTelemetry middleware
 	app.Use(otelfiber.Middleware(
 		otelfiber.WithServerName("openai-claude-proxy"),
@@ -49,9 +50,27 @@ func RegisterRoutes(app *fiber.App, logger *observability.Logger, metrics *obser
 	// Create chat completions handler
 	parser := claude.NewParser()
 	conv := converter.NewConverter()
-	chatHandler := handlers.NewChatCompletionsHandler(executor, parser, conv, metrics, logger)
+	chatHandler := handlers.NewChatCompletionsHandler(executor, parser, conv, mcpManager, metrics, logger)
 
 	// API routes
 	v1 := app.Group("/v1")
 	v1.Post("/chat/completions", chatHandler.Handle)
+
+	// MCP tools endpoint (for debugging/discovery)
+	v1.Get("/mcp/tools", func(c *fiber.Ctx) error {
+		tools := mcpManager.GetAllTools()
+		return c.JSON(fiber.Map{
+			"tools": tools,
+			"count": len(tools),
+		})
+	})
+
+	// MCP servers endpoint (for debugging/discovery)
+	v1.Get("/mcp/servers", func(c *fiber.Ctx) error {
+		clients := mcpManager.GetClients()
+		return c.JSON(fiber.Map{
+			"servers": clients,
+			"count":   len(clients),
+		})
+	})
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/leeaandrob/claudex/internal/api"
 	"github.com/leeaandrob/claudex/internal/claude"
+	"github.com/leeaandrob/claudex/internal/mcp"
 	"github.com/leeaandrob/claudex/internal/observability"
 )
 
@@ -60,6 +61,23 @@ func main() {
 		logger.Info("claude CLI is available")
 	}
 
+	// Initialize MCP manager
+	mcpManager := mcp.NewManager()
+	if err := mcpManager.LoadConfigFromEnv(); err != nil {
+		logger.Warn("failed to load MCP config", "error", err.Error())
+	}
+
+	// Start MCP servers
+	mcpCtx, mcpCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	if err := mcpManager.StartAll(mcpCtx); err != nil {
+		logger.Warn("failed to start MCP servers", "error", err.Error())
+	} else if mcpManager.GetClientCount() > 0 {
+		logger.Info("MCP servers started",
+			"count", mcpManager.GetClientCount(),
+			"tools", len(mcpManager.GetAllTools()))
+	}
+	mcpCancel()
+
 	// Create Fiber app
 	app := fiber.New(fiber.Config{
 		AppName:               serviceName,
@@ -72,7 +90,7 @@ func main() {
 	app.Use(recover.New())
 
 	// Register routes
-	api.RegisterRoutes(app, logger, metrics, executor)
+	api.RegisterRoutes(app, logger, metrics, executor, mcpManager)
 
 	// Graceful shutdown
 	go func() {
@@ -81,6 +99,11 @@ func main() {
 		sig := <-sigCh
 
 		logger.Info("received shutdown signal", "signal", sig.String())
+
+		// Stop MCP servers
+		if err := mcpManager.StopAll(); err != nil {
+			logger.Error("error stopping MCP servers", "error", err.Error())
+		}
 
 		// Give in-flight requests time to complete
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

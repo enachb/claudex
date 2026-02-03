@@ -1,0 +1,18 @@
+mcp:
+  settings:
+    init_timeout: 30
+    call_timeout: 60
+    auto_restart: true
+    max_restarts: 3
+
+  servers:
+    - name: pokemon-emulator
+      enabled: true
+      command: "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/.venv/bin/python"
+      args:
+        - "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/mcp_server.py"
+        - "--rom"
+        - "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/pokemon.gb"
+        - "--state"
+        - "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/pokemon.gb.state"
+      env: {}
