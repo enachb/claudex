@@ -1,6 +1,8 @@
 # Binaries
 bin/
 proxy
+server
+server-*
 *.exe
 *.exe~
 *.dll
@@ -47,3 +49,6 @@ __pycache__/
 
 # Server PID file
 .server.pid
+
+# Kubernetes secrets
+k8s/leandro/secrets.yaml

@@ -1,5 +1,5 @@
-# Runtime stage with pre-built binary
-FROM --platform=linux/arm64 node:22-alpine
+# Runtime stage with pre-built binary (amd64)
+FROM --platform=linux/amd64 node:22-alpine
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ RUN mkdir -p /home/appuser/.claude && \
     chmod 755 /home/appuser/.claude
 
 # Copy pre-built binary and entrypoint
-COPY server-arm64 /app/server
+COPY server-amd64 /app/server
 COPY scripts/entrypoint.sh /app/entrypoint.sh
 
 # Change ownership and permissions

@@ -15,4 +15,7 @@ mcp:
         - "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/pokemon.gb"
         - "--state"
         - "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/pokemon.gb.state"
-      env: {}
+        - "--stream-port"
+        - "8090"
+      env:
+        PYTHONUNBUFFERED: "1"
