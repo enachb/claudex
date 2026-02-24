@@ -1,7 +1,7 @@
 # Binaries
 bin/
 proxy
-server
+/server
 server-*
 *.exe
 *.exe~
