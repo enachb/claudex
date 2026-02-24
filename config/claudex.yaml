@@ -7,7 +7,7 @@ mcp:
 
   servers:
     - name: pokemon-emulator
-      enabled: true
+      enabled: false
       command: "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/.venv/bin/python"
       args:
         - "/home/leeaandrob/Projects/Personal/llm/pokemon-ai-league-brazil/claude-plays-pokemon/mcp_server.py"
