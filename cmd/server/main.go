@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	flag "github.com/namsral/flag"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 
@@ -18,11 +20,13 @@ import (
 )
 
 func main() {
-	// Configuration from environment
-	port := getEnv("PORT", "8080")
-	logLevel := getEnv("LOG_LEVEL", "info")
-	otlpEndpoint := getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	serviceName := getEnv("SERVICE_NAME", "openai-claude-proxy")
+	// Configuration from flags / environment
+	var port, logLevel, otlpEndpoint, serviceName string
+	flag.StringVar(&port, "port", "8080", "server listen port")
+	flag.StringVar(&logLevel, "log_level", "info", "log level")
+	flag.StringVar(&otlpEndpoint, "otel_exporter_otlp_endpoint", "", "OTLP exporter endpoint")
+	flag.StringVar(&serviceName, "service_name", "openai-claude-proxy", "service name")
+	flag.Parse()
 
 	// Initialize logger
 	logger := observability.NewLogger(logLevel)
@@ -119,12 +123,4 @@ func main() {
 	if err := app.Listen(":" + port); err != nil {
 		log.Fatalf("failed to start server: %v", err)
 	}
-}
-
-// getEnv returns environment variable value or default.
-func getEnv(key, defaultValue string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return defaultValue
 }
