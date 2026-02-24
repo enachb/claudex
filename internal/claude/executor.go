@@ -279,6 +279,7 @@ func (e *Executor) executeStreamingWithStreamJSON(ctx context.Context, messages 
 		var stderrBuf bytes.Buffer
 		go func() {
 			scanner := bufio.NewScanner(stderr)
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 			for scanner.Scan() {
 				stderrBuf.WriteString(scanner.Text())
 				stderrBuf.WriteString("\n")
@@ -286,6 +287,7 @@ func (e *Executor) executeStreamingWithStreamJSON(ctx context.Context, messages 
 		}()
 
 		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line != "" {
@@ -615,6 +617,7 @@ func (e *Executor) ExecuteStreaming(ctx context.Context, prompt, systemPrompt st
 		var stderrBuf bytes.Buffer
 		go func() {
 			scanner := bufio.NewScanner(stderr)
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 			for scanner.Scan() {
 				stderrBuf.WriteString(scanner.Text())
 				stderrBuf.WriteString("\n")
@@ -622,6 +625,7 @@ func (e *Executor) ExecuteStreaming(ctx context.Context, prompt, systemPrompt st
 		}()
 
 		scanner := bufio.NewScanner(stdout)
+		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line != "" {

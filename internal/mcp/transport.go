@@ -96,6 +96,7 @@ func (t *StdioTransport) drainStderr() {
 		return
 	}
 	scanner := bufio.NewScanner(t.stderr)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		// Could log stderr here if needed for debugging
 		_ = scanner.Text()
